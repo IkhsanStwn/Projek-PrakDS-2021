@@ -1,0 +1,285 @@
+---
+title: "Proyek Akhir Data Science"
+author: "Ikhsan Setiawan (123190111) & M Patty Amal Madani (123190121)"
+date: "26/11/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tm)
+library(twitteR)
+library(rtweet)
+library(shiny) #package shiny
+library(syuzhet) #package analisis sentimen
+library(wordcloud2) #package wordcloud
+library(tm)
+library(vroom)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+library(plyr)
+library(RTextTools)
+library(lattice)
+```
+
+
+```{r}
+#mengakses twitter API
+api_key<- "eGgJeZlF2uzKeakriBVaYrU5c"
+api_secret<- "ymAHRUuZev1Bux6GoQ5DEpOBKrvdFFaAAmyyPbvDualUmzPNci"
+access_token<- "1463818247074025475-HeMMQHSGRBuZYORDZNerhYHB9tLcj2"
+access_token_secret<- "WGbHcAJAy7kvI9HCwZs3dKBVH1YUP0aK9PptLrvjqgUnV"
+setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
+```
+
+```{r}
+#crawling data twett mengenai sirkuit mandalika
+tw = searchTwitter('Mandalika + sirkuit mandalika', 
+                   n = 1000,
+                   retryOnRateLimit = 10e5, lang = "id") #retryOnRateLimit untuk looping
+df_mandalika <- do.call("rbind", lapply(tw, as.data.frame))
+View(df_mandalika)
+saveRDS(tw,file = 'new_tweet.rds')
+```
+
+```{r}
+tw <- readRDS('new_tweet.rds')
+d = twListToDF(tw) #konversi twitteR list menjadi data frame
+#menampilkan semua tweet yang kita mining
+komen <- d$text
+komenc <- Corpus(VectorSource(komen))
+
+##hapus retweet
+removeRT <- function(y) gsub("RT ", "", y)
+twitclean <- tm_map(komenc, removeRT)
+
+#mengubah huruf kecil
+twitclean <- tm_map(twitclean, tolower) 
+
+##hapus URL
+removeURL <- function(x) gsub("http[^[:space:]]*", "", x)
+twitclean <- tm_map(twitclean, removeURL)
+
+##hapus New Line
+removeNL <- function(y) gsub("\n", " ", y)
+twitclean <- tm_map(twitclean, removeNL)
+
+##removepipe
+removepipe <- function(z) gsub("<[^>]+>", "", z)
+twitclean <- tm_map(twitclean, removepipe)
+
+#hapus Mention
+removeUN <- function(z) gsub("@\\S+", "", z)
+twitclean <- tm_map(twitclean, removeUN)
+
+#hapus Hastag
+removeHS <- function(z) gsub("#\\S+", "", z)
+twitclean <- tm_map(twitclean, removeHS)
+
+#hapus &amp
+removeamp <- function(y) gsub("&amp;", "", y)
+twitclean <- tm_map(twitclean, removeamp)
+
+#tanda baca
+twitclean <- tm_map(twitclean, removePunctuation) 
+
+#hapus space dll
+remove.all <- function(xy) gsub("[^[:alpha:][:space:]]*", "", xy)
+twitclean <- tm_map(twitclean,remove.all)
+
+#stopwords
+myStopwords <- readLines("stopwordbahasa.csv", warn = FALSE)
+twitclean <- tm_map(twitclean,removeWords,myStopwords)
+
+inspect(twitclean[1:10])
+
+#HAPUS DATA KOSONG
+try.error = function(x)
+{
+  # create missing value
+  y = NA
+  # tryCatch error
+  try_error = tryCatch(tolower(x), error=function(e) e)
+  # if not an error
+  if (!inherits(try_error, "error"))
+    y = tolower(x)
+  # result
+  return(y)
+}
+# lower case using try.error with sapply 
+twitclean = sapply(twitclean, try.error)
+# remove NAs in some_txt
+twitclean = twitclean[!is.na(twitclean)]
+names(twitclean) = NULL
+
+```
+
+```{r}
+# dataframe data yg sudah bersih
+dataclean<-data.frame(text=unlist(sapply(twitclean, `[`)), stringsAsFactors=F)
+View(dataclean)
+write.csv(dataclean,'tweet_mandalika.csv')
+```
+
+
+```{r}
+##labeling/polarity positif negatif
+
+kalimat2 <- read.csv("tweet_mandalika.csv",header = TRUE)
+
+#skoring
+positif <- scan("positive_keyword.txt",what="character",comment.char=";")
+negatif <- scan("negative_keyword.txt",what="character",comment.char=";")
+kata.positif = c(positif)
+kata.negatif = c(negatif)
+score.sentiment = function(kalimat2, kata.positif, kata.negatif, .progress='none')
+{
+  require(plyr)
+  require(stringr)
+  scores = laply(kalimat2, function(kalimat, kata.positif, kata.negatif) {
+    kalimat = gsub('[[:punct:]]', '', kalimat)
+    kalimat = gsub('[[:cntrl:]]', '', kalimat)
+    kalimat = gsub('\\d+', '', kalimat)
+    kalimat = tolower(kalimat)
+    
+    list.kata = str_split(kalimat, '\\s+')
+    kata2 = unlist(list.kata)
+    positif.matches = match(kata2, kata.positif)
+    negatif.matches = match(kata2, kata.negatif)
+    positif.matches = !is.na(positif.matches)
+    negatif.matches = !is.na(negatif.matches)
+    score = sum(positif.matches) - (sum(negatif.matches))
+    return(score)
+  }, kata.positif, kata.negatif, .progress=.progress )
+  scores.df = data.frame(score=scores, text=kalimat2)
+  return(scores.df)
+}
+
+hasil = score.sentiment(kalimat2$text, kata.positif, kata.negatif)
+View(hasil)
+
+#CONVERT SCORE TO SENTIMENT
+hasil$polarity<- ifelse(hasil$score<0, "Negatif",ifelse(hasil$score==0,"Netral","Positif"))
+hasil$polarity
+View(hasil)
+
+#EXCHANGE ROW SEQUENCE
+data_labeling <- hasil[c(2,1,3)]
+View(data_labeling)
+write.csv(data_labeling, file = "tweet_mandalika1.csv")
+
+
+```
+
+```{r}
+#sentiment analisis emotion
+
+library(e1071)
+library(caret)
+library(syuzhet)
+#digunakan untuk membaca file csv yang sudah di cleaning data
+mandalika_dataset <-read.csv("tweet_mandalika.csv",stringsAsFactors = FALSE)
+#digunakan untuk mengeset variabel cloumn text menjadi char
+review <- as.character(mandalika_dataset$text)
+#memanggil sentimen dictionary untuk menghitung presentasi dari beberapa emotion dan mengubahnya ke dalam text file
+get_nrc_sentiment('happy')
+get_nrc_sentiment('excitement')
+s<-get_nrc_sentiment(review)
+review_combine<-cbind(mandalika_dataset$text,s)
+par(mar=rep(3,4))
+barplot(colSums(s),col=rainbow(10),ylab='count',main='sentiment analisis')
+```
+
+```{r}
+komen <- dataclean$text
+komenc <- Corpus(VectorSource(komen))
+#term document matrik
+{
+  dtm <- TermDocumentMatrix(komenc)
+  m <- as.matrix(dtm)
+  v <- sort(rowSums(m), decreasing = TRUE)
+  a <- data.frame(word = names(v), freq=v)
+}
+head(a,n=100)
+
+```
+
+```{r}
+##wordcloud
+wordcloud2(a)
+```
+
+```{r}
+##plot 
+ggplot(hasil, aes(x=polarity)) +
+  geom_bar(aes(y=..count.., fill=polarity)) +
+  scale_fill_brewer(palette="RdGy") +
+  labs(x="polarity categories", y="number of tweets") +
+  labs(title = "Sentiment Analysis Sirkuit Mandalika",
+       plot.title = element_text(size=12))
+```
+
+
+```{r}
+## Shiny
+
+# bagian yang mengatur tampilan web, baik input maupun outpun yang akan ditampilkan dalam web app.
+ui <- fluidPage(
+  titlePanel("Analisis Sentimen Sirkuit Mandalika Pada Twitter"), #halaman judul dr fluid page
+  mainPanel( #tab pada fluidpage
+    #plot output : untuk scatterplot
+    tabsetPanel(type = "tabs",
+                tabPanel("Data Twitter", DT::dataTableOutput('tbl')), #tab berupa data twitter
+                
+                tabPanel("Data Cleaning", DT::dataTableOutput('tbl_clean')), #tab berupa data clening twitter
+                
+                tabPanel("Scatterplot", plotOutput("scatterplot")), #tab berupa scatterplot/grafik
+                
+                tabPanel("Polarityplot", plotOutput("polarityplot")), #tab berupa scatterplot/grafik
+          
+                tabPanel("Wordcloud", wordcloud2Output("wordcloud")) #tab berupa worldcloud
+    )
+  )
+)
+# SERVER
+# Disinialah tempat dimana data akan dianalisis dan diproses lalu hasilnya akan ditampilkan atau diplotkan pada bagian mainpanel() ui yang telah dijelaskan sebelumnya.
+server <- function(input, output) {
+  
+  # Output Data twit
+  output$tbl = DT::renderDataTable({ 
+    data_tw = data.frame(text = d$text)
+    DT::datatable(data_tw, options = list(lengthChange = FALSE)) # data akan ditampilkan dalam beberapa halaman.
+  })
+  
+  # Output Data clean twit
+  output$tbl_clean = DT::renderDataTable({ 
+    DT::datatable(data_labeling, options = list(lengthChange = FALSE)) # data akan ditampilkan dalam beberapa halaman.
+  })
+  
+  #Barplot
+  output$scatterplot <- renderPlot({
+  barplot(colSums(s),col=rainbow(10),ylab='count',main='sentiment analisis')
+  }, height=400)
+  
+  #Polarity plot
+  output$polarityplot <- renderPlot({
+  ggplot(hasil, aes(x=polarity)) +
+  geom_bar(aes(y=..count.., fill=polarity)) +
+  scale_fill_brewer(palette="RdGy") +
+  labs(x="polarity categories", y="number of tweets") +
+  labs(title = "Sentiment Analysis Sirkuit Mandalika",
+       plot.title = element_text(size=12))
+  }, height=400)
+  
+  #WordCloud
+  output$wordcloud <- renderWordcloud2({
+    wordcloud2(a)
+  })
+}
+shinyApp(ui = ui, server = server)
+```
